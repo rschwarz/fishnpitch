@@ -13,10 +13,17 @@
 #define PITCHBEND  0xe0
 
 // global variables
-jack_port_t *    g_in;
-jack_port_t *    g_out;
-jack_midi_data_t g_tab[128][3];
-jack_midi_data_t g_ch[16];
+jack_port_t *    g_in;          // JACK MIDI input
+jack_port_t *    g_out;         // JACK MIDI output
+jack_midi_data_t g_tab[128][3]; // MIDI data for translation
+jack_midi_data_t g_ch[16];      // current note for each channel
+jack_midi_data_t g_next[16];    // next free channel in queue
+jack_midi_data_t g_first;       // first free channel in queue
+jack_midi_data_t g_last;        // last free channel in queue
+                                //   Even after a note off event, some 
+                                //   sound is heard, so we shouldn't
+                                //   change pitch. Better use the oldest
+                                //   note first.
 
 int usage() {
     printf("Usage: fishnpitch [-k KEYBOARD_MAPPING] [-p PITCH_RANGE (cents)] SCALE \n");
@@ -97,19 +104,24 @@ int process(jack_nframes_t nframes, void * arg) {
             } else {
                 /* printf("Note on: key %x maps to %2x, pitch %2x %2x\n",  */
                 /*        k, tab[k][0], tab[k][1], tab[k][2]); */
-                jack_midi_data_t c;
-                for (c = 0; c != 16; ++c) {
-                    if (g_ch[c] != 0xff) // channel occupied
-                        continue;
-                    g_ch[c] = g_tab[k][0];
-                    // pitch bend message
-                    temp[0] = PITCHBEND + c; temp[1] = g_tab[k][1]; temp[2] = g_tab[k][2];
-                    jack_midi_event_write(out_buffer, event.time, temp, event.size);
-                    // note on message
-                    temp[0] = NOTEON + c; temp[1] = g_tab[k][0]; temp[2] = event.buffer[2];
-                    jack_midi_event_write(out_buffer, event.time, temp, event.size);
-                    break;
+                jack_midi_data_t c = g_first;
+                if (c == 0xff) {
+                    // channel occupied, no playback possible
+                    continue;
                 }
+                // occupy channel
+                g_ch[c] = g_tab[k][0]; // set channel's current note
+                g_first = g_next[c];   // move first to next free channel
+                g_next[c] = 0xff;      // is no longer in queue
+                if (g_last == c)       // if this was last free channel
+                    g_last = 0xff;     //   say so, for later appending
+
+                // pitch bend message
+                temp[0] = PITCHBEND + c; temp[1] = g_tab[k][1]; temp[2] = g_tab[k][2];
+                jack_midi_event_write(out_buffer, event.time, temp, event.size);
+                // note on message
+                temp[0] = NOTEON + c; temp[1] = g_tab[k][0]; temp[2] = event.buffer[2];
+                jack_midi_event_write(out_buffer, event.time, temp, event.size);
             }
         } else if ((event.buffer[0] & 0xf0) == NOTEOFF) {
             jack_midi_data_t k = event.buffer[1];
@@ -120,9 +132,17 @@ int process(jack_nframes_t nframes, void * arg) {
                 /*        k, tab[k][0], tab[k][1], tab[k][2]); */
                 jack_midi_data_t c;
                 for (c = 0; c != 16; ++c) {
-                    if (g_ch[c] != g_tab[k][0]) // wrong channel
+                    if (g_ch[c] != g_tab[k][0]) // unique channel for every note?!
                         continue;
-                    g_ch[c] = 0xff;
+                    // make channel available again
+                    g_ch[c] = 0xff;         // isn't occupied anymore
+                    if (g_last == 0xff) {   // if queue is empty at the moment
+                        g_first = c;        //   both ends point to this channel
+                        g_last = c;         //
+                    } else {                // append at queue's end
+                        g_next[g_last] = c; //   connect to one before last
+                        g_last = c;         //   and point end to c
+                    }
                     // note off message
                     temp[0] = NOTEOFF + c; temp[1] = g_tab[k][0]; temp[2] = event.buffer[2];
                     jack_midi_event_write(out_buffer, event.time, temp, event.size);
@@ -340,8 +360,12 @@ int main(int argc, char *argv[]) {
 
     // clear midi channels
     for (i=0; i < 16; ++i) {
-        g_ch[i] = 0xff; // this key is never mapped to
+        g_ch[i]   = 0xff; 
+        g_next[i] = i + 1;
     }
+    g_next[15] = 0xff;
+    g_first = 0;
+    g_last = 15;
 
     // open jack client
     jack_client_t * client = jack_client_open("fishnpitch", JackNoStartServer, NULL);
