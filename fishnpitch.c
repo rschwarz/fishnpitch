@@ -26,9 +26,16 @@ jack_midi_data_t g_last;        // last free channel in queue
                                 //   note first.
 
 int usage() {
-    printf("Usage: fishnpitch [-k KEYBOARD_MAPPING] [-p PITCH_RANGE (cents)] SCALE \n");
-    printf("  default keymapping uses all 12 keys and tunes key 69 to 440.0 Hz\n");
-    printf("  default pitch bend range is +/- 200.0 cents (2 semitones)\n");
+    printf("Usage: fishnpitch [OPTIONS] SCALE \n");
+    printf("Options:\n");
+    printf("  -k KEYBOARDMAPPING \ta .scl file\n");
+    printf("     default keyboard mapping uses all 12 keys\n");
+    printf("     and tunes key 69 to 440.0 Hz\n");
+    printf("  -p PITCH_RANGE     \tin cents\n"); 
+    printf("     default pitch bend range is +/- 200.0 cents (2 semitones)\n");
+    printf("  -c CHANNELS        \te.g. 01234567890abcdef\n");
+    printf("     by default use all 16 channels, write 0 to use just the first\n");
+    printf("     number of channels bounds polyphony\n");
     return 1;
 }
 
@@ -184,13 +191,14 @@ int main(int argc, char *argv[]) {
 
     int i;
 
-    /* int m[128];   // global keyboard mapping */
-    /* int key[128]; // key translation table */
+    for (i = 0; i != 16; ++i) {
+        g_ch[i] = 1;
+    }
 
     // process arguments
     int c = 0;
     opterr = 0;
-    while ((c = getopt (argc, argv, "k:p:")) != -1) {
+    while ((c = getopt (argc, argv, "k:p:c:")) != -1) {
         switch (c) {
         case 'p':
             sscanf(optarg, "%d", &pitch_range);
@@ -202,6 +210,13 @@ int main(int argc, char *argv[]) {
                 return usage();
             }
             printf("Reading keyboard mapping: %s\n", optarg);
+            break;
+        case 'c':
+            for (i = 0; i != 16; ++i) {
+                char * hex = "01234567890abcdef";
+                if (strchr(optarg, hex[i]) == NULL)
+                    g_ch[i] = 0; // deactivate channel
+            }
             break;
         case '?':
             if (optopt == 'k' || optopt == 'p')
@@ -358,14 +373,31 @@ int main(int argc, char *argv[]) {
         g_tab[i][1] = (pitch & 0x007f);
     }
 
-    // clear midi channels
-    for (i=0; i < 16; ++i) {
-        g_ch[i]   = 0xff; 
-        g_next[i] = i + 1;
+    // prepare midi channels
+    g_first = 0xff;
+    g_last  = 0xff;
+    for (i = 0; i < 16; ++i) {
+        if (g_ch[i] == 0) // deactivated channel
+            continue;
+        if (g_first == 0xff)
+            g_first = i;  // will be on first activated
+        g_last = i;       // will be on last activated
+        g_next[i] = 0xff; // will all be 0xff
     }
-    g_next[15] = 0xff;
-    g_first = 0;
-    g_last = 15;
+    if (g_first == 0xff) {
+        printf("Error: No MIDI channel is free!\n");
+        return usage();
+    }
+    int cur = g_first;
+    for (i = cur + 1; i <= g_last; ++i) {
+        if (g_ch[i] == 0) // deactivated channel
+            continue;
+        g_next[cur] = i;
+        cur = i;
+    }
+    for (i = 0; i < 16; ++i) {
+        g_ch[i]   = 0xff; 
+    }
 
     // open jack client
     jack_client_t * client = jack_client_open("fishnpitch", JackNoStartServer, NULL);
@@ -379,7 +411,7 @@ int main(int argc, char *argv[]) {
     g_out = jack_port_register(client, "out", JACK_DEFAULT_MIDI_TYPE, JackPortIsOutput, 0);
 
     if (jack_activate(client)) {
-        printf("Error: cannot activate JACK client");
+        printf("Error: cannot activate JACK client!\m");
         return 1;
     }
 
