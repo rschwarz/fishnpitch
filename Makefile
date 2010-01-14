@@ -1,6 +1,6 @@
 CC = gcc
 
-CCFLAGS = -O2 -c -Wall -g
+CCFLAGS = -O2 -c -Wall
 
 LDFLAGS = -lm `pkg-config --cflags --libs jack`
 

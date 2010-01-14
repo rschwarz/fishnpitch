@@ -166,9 +166,9 @@ int process(jack_nframes_t nframes, void * arg) {
 int main(int argc, char *argv[]) {
     // scale
     //   see: http://www.huygens-fokker.org/scala/scl_format.html
-    FILE * scl_file = NULL; // .scl
-    int    scl_length;      // number of deg in scale
-    double scl_deg[128];        // scale deg in cents (one formal octave)
+    FILE * scl_file = NULL;                          // .scl
+    int    scl_length;                               // number of deg in scale
+    double * scl_deg = malloc(128 * sizeof(double)); // scale deg in cents (one formal octave)
 
     // keyboard mapping, with default values
     //   see: http://www.huygens-fokker.org/scala/help.htm#mappings
@@ -180,14 +180,12 @@ int main(int argc, char *argv[]) {
     int    kbm_ref_note       = 69;    // this note is tuned directly,
     double kbm_ref_freq       = 440.0; //   with this frequency.
     int    kbm_form_oct       = 12;    // this many keys form one formal octave
-                                      //   (should be the same as scale length?)
-    int    kbm_deg[128]; // keyboard mapping (one formal octave)
 
-    // default pitch bend range value is +/- 200 cents
-    int pitch_range = 200;
+    int *  kbm_deg = malloc(128 * sizeof(int)); // keyboard mapping (one formal octave)
 
-    int pitch_middle   = 8192;  //  no pitch bend
-    int pitch_high     = 16384; // max pitch bind
+    int pitch_range  = 200;   // default pitch bend range value is +/- 200 cents
+    int pitch_middle = 8192;  //  no pitch bend
+    int pitch_high   = 16384; // max pitch bind
 
     int i;
 
@@ -209,11 +207,10 @@ int main(int argc, char *argv[]) {
                 printf("Error: Keyboard mapping file not found!\n");
                 return usage();
             }
-            printf("Reading keyboard mapping: %s\n", optarg);
             break;
         case 'c':
             for (i = 0; i != 16; ++i) {
-                char * hex = "01234567890abcdef";
+                char hex[] = "01234567890abcdef";
                 if (strchr(optarg, hex[i]) == NULL)
                     g_ch[i] = 0; // deactivate channel
             }
@@ -244,7 +241,7 @@ int main(int argc, char *argv[]) {
 
     // read scale file
     do {
-        char line[BUFFERSIZE];
+        char * line = malloc(BUFFERSIZE * sizeof(char));
 
         do { fgets(line, BUFFERSIZE, scl_file); } while (line[0] == '!') ;
         printf("Reading scale file:\n%s", line);
@@ -259,12 +256,13 @@ int main(int argc, char *argv[]) {
             /* printf("%d %f\n", i, scl_deg[i]); */
         }
         
+        free(line);
         fclose(scl_file);
     } while (0);
 
     // read keyboard mapping
     if (kbm_file != NULL) {
-        char line[BUFFERSIZE];
+        char * line = malloc(BUFFERSIZE * sizeof(char));
 
         do { fgets(line, BUFFERSIZE, kbm_file); } while (line[0] == '!') ;
         sscanf(line, "%d", &kbm_size);
@@ -296,6 +294,8 @@ int main(int argc, char *argv[]) {
             fgets(line, BUFFERSIZE, kbm_file);
             /* printf("%d %d\n", i, kbm_deg[i]); */
         }
+
+        free(line);
     } else { // no kbm given, writing standard one
         kbm_size           = scl_length;
         kbm_form_oct       = scl_length;
@@ -305,7 +305,7 @@ int main(int argc, char *argv[]) {
     }
 
     // compute target frequency values
-    double target_freq[128];
+    double * target_freq = malloc(128 * sizeof(double));
     double ref_freq; // first compute the frequency for kbm_middle_note
     do {
         int i = kbm_ref_note;
@@ -349,7 +349,7 @@ int main(int argc, char *argv[]) {
     }
 
     // compute standard 12tet frequency values
-    double source_freq[128];
+    double * source_freq = malloc(128 * sizeof(double));
     for (i = 0; i != 128; ++i) {
         source_freq[i] = 440.0 * pow(2.0, -5 - 900./1200. + i*100.0/1200.);
     }
@@ -399,6 +399,12 @@ int main(int argc, char *argv[]) {
         g_ch[i]   = 0xff; 
     }
 
+    // free temporary memory
+    free(kbm_deg);
+    free(target_freq);
+    free(source_freq);
+    free(scl_deg);
+
     // open jack client
     jack_client_t * client = jack_client_open("fishnpitch", JackNoStartServer, NULL);
     if (client == NULL) {
@@ -411,7 +417,7 @@ int main(int argc, char *argv[]) {
     g_out = jack_port_register(client, "out", JACK_DEFAULT_MIDI_TYPE, JackPortIsOutput, 0);
 
     if (jack_activate(client)) {
-        printf("Error: cannot activate JACK client!\m");
+        printf("Error: cannot activate JACK client!\n");
         return 1;
     }
 
