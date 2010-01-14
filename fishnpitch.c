@@ -12,10 +12,11 @@
 #define NOTEOFF    0x80
 #define PITCHBEND  0xe0
 
-jack_port_t * in;
-jack_port_t * out;
-jack_midi_data_t tab[128][3];
-jack_midi_data_t ch[16];
+// global variables
+jack_port_t *    g_in;
+jack_port_t *    g_out;
+jack_midi_data_t g_tab[128][3];
+jack_midi_data_t g_ch[16];
 
 int usage() {
     printf("Usage: fishnpitch [-k KEYBOARD_MAPPING] [-p PITCH_RANGE (cents)] SCALE \n");
@@ -43,7 +44,7 @@ double pitch2cent(char * line) {
 
 int find_key(double freq, double * old_freq) {
     if (old_freq[0] > freq || old_freq[127] < freq) {
-        return -1; // not playable
+        return -1; // not playable (simplification)
     }
 
     // binary search
@@ -70,8 +71,8 @@ int process(jack_nframes_t nframes, void * arg) {
     /* printf("\n"); */
     jack_midi_event_t event;
     jack_midi_data_t temp[3];
-    void * in_buffer  = jack_port_get_buffer(in, nframes);
-    void * out_buffer = jack_port_get_buffer(out, nframes);
+    void * in_buffer  = jack_port_get_buffer(g_in, nframes);
+    void * out_buffer = jack_port_get_buffer(g_out, nframes);
     if (in_buffer == NULL || out_buffer == NULL) {
         puts("Error: Couldn't get buffer!");
     }
@@ -79,9 +80,9 @@ int process(jack_nframes_t nframes, void * arg) {
 
     jack_nframes_t i;
     jack_nframes_t count = jack_midi_get_event_count(in_buffer);
-    for (i=0; i != count; ++i) {
+    for (i = 0; i != count; ++i) {
         if (jack_midi_event_get(&event, in_buffer, i)) {
-            puts("Error: Coudln't receive MIDI event!");
+            puts("Error: Couldn't receive MIDI event!");
         }
         /* printf("received event: time %d, ", event.time); */
         /* int j; */
@@ -90,40 +91,40 @@ int process(jack_nframes_t nframes, void * arg) {
         /* } */
         /* printf("\n"); */
         if ((event.buffer[0] & 0xf0) == NOTEON) {
-            int k = event.buffer[1];
-            if (tab[k][0] == 0xff) { 
+            jack_midi_data_t k = event.buffer[1];
+            if (g_tab[k][0] == 0xff) { 
                 /* printf("Note on: key %x is unmapped!\n", k); */
             } else {
                 /* printf("Note on: key %x maps to %2x, pitch %2x %2x\n",  */
                 /*        k, tab[k][0], tab[k][1], tab[k][2]); */
                 jack_midi_data_t c;
-                for (c=0; c < 16; ++c) {
-                    if (ch[c] != 0xff) // channel occupied
+                for (c = 0; c != 16; ++c) {
+                    if (g_ch[c] != 0xff) // channel occupied
                         continue;
-                    ch[c] = tab[k][0];
-                    // pitch bend
-                    temp[0] = PITCHBEND + c; temp[1] = tab[k][1]; temp[2] = tab[k][2];
+                    g_ch[c] = g_tab[k][0];
+                    // pitch bend message
+                    temp[0] = PITCHBEND + c; temp[1] = g_tab[k][1]; temp[2] = g_tab[k][2];
                     jack_midi_event_write(out_buffer, event.time, temp, event.size);
                     // note on message
-                    temp[0] = NOTEON + c; temp[1] = tab[k][0]; temp[2] = event.buffer[2];
+                    temp[0] = NOTEON + c; temp[1] = g_tab[k][0]; temp[2] = event.buffer[2];
                     jack_midi_event_write(out_buffer, event.time, temp, event.size);
                     break;
                 }
             }
         } else if ((event.buffer[0] & 0xf0) == NOTEOFF) {
-            int k = event.buffer[1];
-            if (tab[k][0] == 0xff) { 
+            jack_midi_data_t k = event.buffer[1];
+            if (g_tab[k][0] == 0xff) { 
                 /* printf("Note off: key %x is unmapped!\n", k); */
             } else {
                 /* printf("Note off: key %x maps to %2x, pitch %2x %2x\n",  */
                 /*        k, tab[k][0], tab[k][1], tab[k][2]); */
                 jack_midi_data_t c;
-                for (c=0; c < 16; ++c) {
-                    if (ch[c] != tab[k][0]) // wrong channel
+                for (c = 0; c != 16; ++c) {
+                    if (g_ch[c] != g_tab[k][0]) // wrong channel
                         continue;
-                    ch[c] = 0xff;
+                    g_ch[c] = 0xff;
                     // note off message
-                    temp[0] = NOTEOFF + c; temp[1] = tab[k][0]; temp[2] = event.buffer[2];
+                    temp[0] = NOTEOFF + c; temp[1] = g_tab[k][0]; temp[2] = event.buffer[2];
                     jack_midi_event_write(out_buffer, event.time, temp, event.size);
                     break;
                 }
@@ -132,35 +133,36 @@ int process(jack_nframes_t nframes, void * arg) {
             jack_midi_event_write(out_buffer, event.time, event.buffer, event.size);
         }
     }
-
     return 0;
 }
 
 int main(int argc, char *argv[]) {
-    // default values for keyboard mapping
-    // see: http://www.huygens-fokker.org/scala/help.htm#mappings
-    int    center_key    = 69;    // this note is tuned directly,
-    double center_freq   = 440.0; //   with this frequency.
-    int    map_size      = 12;    // keyboard mapping repeats every x keys.
-    int    first_note    = 0;     // first note to be mapped
-    int    middle_note   = 60;    // keyboard mapping starts here
-    int    last_note     = 127;   // last note to be mapped
-    int    formal_octave = 12;    // this many keys form one formal octave
-                                  //   (should be the same as scale length?)
+    // scale
+    //   see: http://www.huygens-fokker.org/scala/scl_format.html
+    FILE * scl_file = NULL; // .scl
+    int    scl_length;      // number of deg in scale
+    double scl_deg[128];        // scale deg in cents (one formal octave)
+
+    // keyboard mapping, with default values
+    //   see: http://www.huygens-fokker.org/scala/help.htm#mappings
+    FILE * kbm_file          = NULL;  // .kbm (optional)
+    int    kbm_size          = 12;    // keyboard mapping repeats every x keys.
+    int    kbm_first_note    = 0;     // first note to be mapped
+    int    kbm_middle_note   = 60;    // keyboard mapping starts here
+    int    kbm_last_note     = 127;   // last note to be mapped
+    int    kbm_ref_note      = 69;    // this note is tuned directly,
+    double kbm_ref_freq      = 440.0; //   with this frequency.
+    int    kbm_form_oct      = 12;    // this many keys form one formal octave
+                                      //   (should be the same as scale length?)
+    int    kbm_deg[128]; // keyboard mapping (one formal octave)
 
     // default pitch bend range value is +/- 200 cents
     double pitch_range = 200.0;
 
-    FILE * scale_file = NULL; // .scl
-    FILE * key_file   = NULL; // .kbm (optional)
 
-    int map[128]; // keyboard mapping (one formal octave)
     int m[128];   // global keyboard mapping
 
     int key[128]; // key translation table
-
-    int    scale_length; // number of steps in scale
-    double scale[128];   // scale steps in cents (one formal octave)
 
     // process arguments
     int c = 0;
@@ -172,7 +174,7 @@ int main(int argc, char *argv[]) {
             printf("Setting pitch range: %f\n", pitch_range);
             break;
         case 'k':
-            if ((key_file = fopen(optarg, "r")) == NULL) {
+            if ((kbm_file = fopen(optarg, "r")) == NULL) {
                 printf("Error: Keyboard mapping file not found!\n");
                 return usage();
             }
@@ -197,7 +199,7 @@ int main(int argc, char *argv[]) {
         printf("Error: No scale file given!\n");
         return usage();        
     }
-    if ((scale_file = fopen(argv[optind], "r")) == NULL) {
+    if ((scl_file = fopen(argv[optind], "r")) == NULL) {
         printf("Error: Scale file not found!\n");
         return usage();
     }
@@ -206,119 +208,119 @@ int main(int argc, char *argv[]) {
     do {
         char line[BUFFERSIZE];
 
-        do { fgets(line, BUFFERSIZE, scale_file); } while (line[0] == '!') ;
+        do { fgets(line, BUFFERSIZE, scl_file); } while (line[0] == '!') ;
         printf("Reading scale file:\n%s", line);
 
-        do { fgets(line, BUFFERSIZE, scale_file); } while (line[0] == '!') ;
-        sscanf(line, "%d", &scale_length);
+        do { fgets(line, BUFFERSIZE, scl_file); } while (line[0] == '!') ;
+        sscanf(line, "%d", &scl_length);
 
-        do { fgets(line, BUFFERSIZE, scale_file); } while (line[0] == '!') ;
+        do { fgets(line, BUFFERSIZE, scl_file); } while (line[0] == '!') ;
         int i;
-        for (i = 0; i != scale_length; ++i) {
-            scale[i] = pitch2cent(line);
-            fgets(line, BUFFERSIZE, scale_file);
+        for (i = 0; i != scl_length; ++i) {
+            scl_deg[i] = pitch2cent(line);
+            fgets(line, BUFFERSIZE, scl_file);
         }
         
-        fclose(scale_file);
+        fclose(scl_file);
     } while (0);    
 
     // read keyboard mapping
-    if (key_file != NULL) {
+    if (kbm_file != NULL) {
         char line[BUFFERSIZE];
 
-        do { fgets(line, BUFFERSIZE, key_file); } while (line[0] == '!') ;
-        sscanf(line, "%d", &map_size);
+        do { fgets(line, BUFFERSIZE, kbm_file); } while (line[0] == '!') ;
+        sscanf(line, "%d", &kbm_size);
 
-        do { fgets(line, BUFFERSIZE, key_file); } while (line[0] == '!') ;
-        sscanf(line, "%d", &first_note);
+        do { fgets(line, BUFFERSIZE, kbm_file); } while (line[0] == '!') ;
+        sscanf(line, "%d", &kbm_first_note);
 
-        do { fgets(line, BUFFERSIZE, key_file); } while (line[0] == '!') ;
-        sscanf(line, "%d", &last_note);
+        do { fgets(line, BUFFERSIZE, kbm_file); } while (line[0] == '!') ;
+        sscanf(line, "%d", &kbm_last_note);
 
-        do { fgets(line, BUFFERSIZE, key_file); } while (line[0] == '!') ;
-        sscanf(line, "%d", &middle_note);
+        do { fgets(line, BUFFERSIZE, kbm_file); } while (line[0] == '!') ;
+        sscanf(line, "%d", &kbm_middle_note);
 
-        do { fgets(line, BUFFERSIZE, key_file); } while (line[0] == '!') ;
-        sscanf(line, "%d", &center_key);
+        do { fgets(line, BUFFERSIZE, kbm_file); } while (line[0] == '!') ;
+        sscanf(line, "%d", &kbm_ref_note);
 
-        do { fgets(line, BUFFERSIZE, key_file); } while (line[0] == '!') ;
-        sscanf(line, "%lf", &center_freq);
+        do { fgets(line, BUFFERSIZE, kbm_file); } while (line[0] == '!') ;
+        sscanf(line, "%lf", &kbm_ref_freq);
 
-        do { fgets(line, BUFFERSIZE, key_file); } while (line[0] == '!') ;
-        sscanf(line, "%d", &formal_octave);
+        do { fgets(line, BUFFERSIZE, kbm_file); } while (line[0] == '!') ;
+        sscanf(line, "%d", &kbm_form_oct);
 
-        do { fgets(line, BUFFERSIZE, key_file); } while (line[0] == '!') ;
+        do { fgets(line, BUFFERSIZE, kbm_file); } while (line[0] == '!') ;
         int i;
-        for (i = 0; i != map_size; ++i) {
+        for (i = 0; i != kbm_size; ++i) {
             if (line[0] == 'x')
-                map[i] = -1;
+                kbm_deg[i] = -1;
             else
-                sscanf(line, "%d", &(map[i]));
-            fgets(line, BUFFERSIZE, key_file);
+                sscanf(line, "%d", &(kbm_deg[i]));
+            fgets(line, BUFFERSIZE, kbm_file);
         }
     } else { // no kbm given, writing standard one
         int i;
-        for (i = 0; i != map_size; ++i) {
-            map[i] = i;
+        for (i = 0; i != kbm_size; ++i) {
+            kbm_deg[i] = i;
         }
     }
 
     // fill keyrange with mapped keys
-    m[middle_note] = middle_note;
+    m[kbm_middle_note] = kbm_middle_note;
     int i;
-    for (i = middle_note + 1; i < 128; ++i) {
-        if (i > last_note) {
+    for (i = kbm_middle_note + 1; i < 128; ++i) {
+        if (i > kbm_last_note) {
             m[i] = -1;
             continue;
         }
-        int n_maps = (i - middle_note) / map_size;
-        m[i] = middle_note + n_maps*formal_octave;
-        int n_key = (i - middle_note) % map_size;
-        if (map[n_key] == -1) {
+        int n_maps = (i - kbm_middle_note) / kbm_size;
+        m[i] = kbm_middle_note + n_maps*kbm_form_oct;
+        int n_key = (i - kbm_middle_note) % kbm_size;
+        if (kbm_deg[n_key] == -1) {
             m[i] = -1;
         } else {
-            m[i] += map[n_key];
+            m[i] += kbm_deg[n_key];
         }
     }
-    for (i = 0; i < middle_note; ++i) {
-        if (i < first_note) {
+    for (i = 0; i < kbm_middle_note; ++i) {
+        if (i < kbm_first_note) {
             m[i] = -1;
             continue;
         }
-        int n_maps = (i - middle_note) / map_size - 1;
-        m[i] = middle_note + n_maps*formal_octave;
-        int n_key = (i + 128*map_size - middle_note) % map_size;
-        if (map[n_key] == -1) {
+        int n_maps = (i - kbm_middle_note) / kbm_size - 1;
+        m[i] = kbm_middle_note + n_maps*kbm_form_oct;
+        int n_key = (i + 128*kbm_size - kbm_middle_note) % kbm_size;
+        if (kbm_deg[n_key] == -1) {
             m[i] = -1;
         } else {
             if (n_key == 0)
-                m[i] += formal_octave;
-            m[i] += map[n_key];
+                m[i] += kbm_form_oct;
+            m[i] += kbm_deg[n_key];
         }
     }
 
     // fill whole keyrange with freq values
     double freq[128];
-    freq[center_key] = center_freq;
-    for (i=center_key + 1; i < 128; ++i) {
+    freq[kbm_ref_note] = kbm_ref_freq;
+    for (i=kbm_ref_note + 1; i < 128; ++i) {
         // first move to right proto-octave
-        int n_octave = (i - center_key) / scale_length;
-        freq[i] = center_freq * pow(2.0, scale[scale_length - 1]*n_octave/1200.0);
+        int n_octave = (i - kbm_ref_note) / scl_length;
+        freq[i] = kbm_ref_freq * pow(2.0, scl_deg[scl_length - 1]*n_octave/1200.0);
         // next ajust key within proto-octave
-        int n_key = (i - center_key) % scale_length;
+        int n_key = (i - kbm_ref_note) % scl_length;
         if (n_key > 0)
-            freq[i] *= pow(2.0, scale[n_key - 1]/1200.0);
+            freq[i] *= pow(2.0, scl_deg[n_key - 1]/1200.0);
     }
-    for (i=0; i < center_key; ++i) {
+    for (i=0; i < kbm_ref_note; ++i) {
         // first move to right proto-octave
-        int n_octave = (i - center_key) / scale_length - 1;
-        freq[i] = center_freq * pow(2.0, scale[scale_length - 1]*n_octave/1200.0);
+        int n_octave = (i - kbm_ref_note) / scl_length - 1;
+        freq[i] = kbm_ref_freq * pow(2.0, scl_deg[scl_length - 1]*n_octave/1200.0);
         // next ajust key within proto-octave
-        int n_key = (i + 128*scale_length - center_key) % scale_length;
+        int n_key = (i + 128*scl_length - kbm_ref_note) % scl_length;
         if (n_key == 0) {
-            freq[i] *= pow(2.0, scale[scale_length - 1]/1200.0);
+            freq[i] *= pow(2.0, scl_deg[scl_length - 1]/1200.0);
         } else if (n_key > 0) {
-            freq[i] *= pow(2.0, scale[n_key - 1]/1200.0);
+            freq[i] *= pow(2.0, scl_deg[n_key - 1]/1200.0);
         }
     }
 
@@ -353,17 +355,17 @@ int main(int argc, char *argv[]) {
     // actually writing midi compatible table
     for (i=0; i < 128; ++i) {
         if (m[i] == -1 || key[m[i]] == -1) {
-            tab[i][0] = 0xff;
-            tab[i][1] = 0xff;            
-            tab[i][2] = 0xff;
+            g_tab[i][0] = 0xff;
+            g_tab[i][1] = 0xff;            
+            g_tab[i][2] = 0xff;
             continue;
         } else {
-            tab[i][0] = key[m[i]];
+            g_tab[i][0] = key[m[i]];
             int p = pitch[m[i]];
             // convert int to two 7bit bytes (< 16384)
             // LSB first?
-            tab[i][2] = (p & 0x3f80) >> 7;
-            tab[i][1] = (p & 0x007f);            
+            g_tab[i][2] = (p & 0x3f80) >> 7;
+            g_tab[i][1] = (p & 0x007f);            
         }
     }
 
@@ -374,7 +376,7 @@ int main(int argc, char *argv[]) {
             printf("%3x --- %12f    ---         ---   ---\n", i, old_freq[i]);
         } else if (key[i] != -1) {
             printf("%3x %3x %12f  %12f  %2x %2x %2x %6d\n",
-                   i, m[i], old_freq[i], freq[i], tab[i][0], tab[i][1], tab[i][2], pitch[i]);
+                   i, m[i], old_freq[i], freq[i], g_tab[i][0], g_tab[i][1], g_tab[i][2], pitch[i]);
         } else {
             printf("%3x %3x %12f  %12f  ---   ---\n", i, m[i], old_freq[i], freq[i]);
         }
@@ -382,7 +384,7 @@ int main(int argc, char *argv[]) {
 
     // clear midi channels
     for (i=0; i < 16; ++i) {
-        ch[i] = 0xff; // this key is never mapped to
+        g_ch[i] = 0xff; // this key is never mapped to
     }
 
     // open jack client
@@ -393,9 +395,8 @@ int main(int argc, char *argv[]) {
     }
 
     jack_set_process_callback(client, process, 0);
-
-    in = jack_port_register(client, "in", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0);
-    out = jack_port_register(client, "out", JACK_DEFAULT_MIDI_TYPE, JackPortIsOutput, 0);
+    g_in  = jack_port_register(client, "in", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0);
+    g_out = jack_port_register(client, "out", JACK_DEFAULT_MIDI_TYPE, JackPortIsOutput, 0);
 
     if (jack_activate(client)) {
         printf("Error: cannot activate JACK client");
@@ -406,6 +407,6 @@ int main(int argc, char *argv[]) {
         sleep(10);
     }
 
-    jack_client_close (client);
-    exit (0);
+    jack_client_close(client);
+    exit(0);
 }
