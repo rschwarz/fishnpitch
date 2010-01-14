@@ -21,7 +21,7 @@ jack_midi_data_t g_ch[16];
 int usage() {
     printf("Usage: fishnpitch [-k KEYBOARD_MAPPING] [-p PITCH_RANGE (cents)] SCALE \n");
     printf("  default keymapping uses all 12 keys and tunes key 69 to 440.0 Hz\n");
-    printf("  default pitch bend range is +/- 200.0 cents (2 semitones)");
+    printf("  default pitch bend range is +/- 200.0 cents (2 semitones)\n");
     return 1;
 }
 
@@ -145,24 +145,27 @@ int main(int argc, char *argv[]) {
 
     // keyboard mapping, with default values
     //   see: http://www.huygens-fokker.org/scala/help.htm#mappings
-    FILE * kbm_file          = NULL;  // .kbm (optional)
-    int    kbm_size          = 12;    // keyboard mapping repeats every x keys.
-    int    kbm_first_note    = 0;     // first note to be mapped
-    int    kbm_middle_note   = 60;    // keyboard mapping starts here
-    int    kbm_last_note     = 127;   // last note to be mapped
-    int    kbm_ref_note      = 69;    // this note is tuned directly,
-    double kbm_ref_freq      = 440.0; //   with this frequency.
-    int    kbm_form_oct      = 12;    // this many keys form one formal octave
+    FILE * kbm_file           = NULL;  // .kbm (optional)
+    int    kbm_size           = 12;    // keyboard mapping repeats every x keys.
+    int    kbm_first_note     = 0;     // first note to be mapped
+    int    kbm_middle_note    = 60;    // keyboard mapping starts here
+    int    kbm_last_note      = 127;   // last note to be mapped
+    int    kbm_ref_note       = 69;    // this note is tuned directly,
+    double kbm_ref_freq       = 440.0; //   with this frequency.
+    int    kbm_form_oct       = 12;    // this many keys form one formal octave
                                       //   (should be the same as scale length?)
     int    kbm_deg[128]; // keyboard mapping (one formal octave)
 
     // default pitch bend range value is +/- 200 cents
-    double pitch_range = 200.0;
+    int pitch_range = 200;
 
+    int pitch_middle   = 8192;  //  no pitch bend
+    int pitch_high     = 16384; // max pitch bind
 
-    int m[128];   // global keyboard mapping
+    int i;
 
-    int key[128]; // key translation table
+    /* int m[128];   // global keyboard mapping */
+    /* int key[128]; // key translation table */
 
     // process arguments
     int c = 0;
@@ -170,8 +173,8 @@ int main(int argc, char *argv[]) {
     while ((c = getopt (argc, argv, "k:p:")) != -1) {
         switch (c) {
         case 'p':
-            sscanf(optarg, "%lf", &pitch_range);
-            printf("Setting pitch range: %f\n", pitch_range);
+            sscanf(optarg, "%d", &pitch_range);
+            printf("Setting pitch range: %d\n", pitch_range);
             break;
         case 'k':
             if ((kbm_file = fopen(optarg, "r")) == NULL) {
@@ -215,14 +218,14 @@ int main(int argc, char *argv[]) {
         sscanf(line, "%d", &scl_length);
 
         do { fgets(line, BUFFERSIZE, scl_file); } while (line[0] == '!') ;
-        int i;
         for (i = 0; i != scl_length; ++i) {
             scl_deg[i] = pitch2cent(line);
             fgets(line, BUFFERSIZE, scl_file);
+            /* printf("%d %f\n", i, scl_deg[i]); */
         }
         
         fclose(scl_file);
-    } while (0);    
+    } while (0);
 
     // read keyboard mapping
     if (kbm_file != NULL) {
@@ -250,136 +253,89 @@ int main(int argc, char *argv[]) {
         sscanf(line, "%d", &kbm_form_oct);
 
         do { fgets(line, BUFFERSIZE, kbm_file); } while (line[0] == '!') ;
-        int i;
         for (i = 0; i != kbm_size; ++i) {
             if (line[0] == 'x')
                 kbm_deg[i] = -1;
             else
                 sscanf(line, "%d", &(kbm_deg[i]));
             fgets(line, BUFFERSIZE, kbm_file);
+            /* printf("%d %d\n", i, kbm_deg[i]); */
         }
     } else { // no kbm given, writing standard one
-        int i;
+        kbm_size           = scl_length;
+        kbm_form_oct       = scl_length;
         for (i = 0; i != kbm_size; ++i) {
             kbm_deg[i] = i;
         }
     }
 
-    // fill keyrange with mapped keys
-    m[kbm_middle_note] = kbm_middle_note;
-    int i;
-    for (i = kbm_middle_note + 1; i < 128; ++i) {
-        if (i > kbm_last_note) {
-            m[i] = -1;
-            continue;
-        }
-        int n_maps = (i - kbm_middle_note) / kbm_size;
-        m[i] = kbm_middle_note + n_maps*kbm_form_oct;
-        int n_key = (i - kbm_middle_note) % kbm_size;
-        if (kbm_deg[n_key] == -1) {
-            m[i] = -1;
+    // compute target frequency values
+    double target_freq[128];
+    double ref_freq; // first compute the frequency for kbm_middle_note
+    do {
+        int i = kbm_ref_note;
+        int q = (i - kbm_middle_note) / kbm_size;
+        int r = (128*kbm_size + i - kbm_middle_note) % kbm_size;
+        if (i < kbm_middle_note && r != 0) // strange rounding behaviour
+            q -= 1;
+        if (r == 0) {
+            ref_freq = kbm_ref_freq / pow(2.0, (scl_deg[scl_length - 1]*q)/1200.0);
         } else {
-            m[i] += kbm_deg[n_key];
+            ref_freq = kbm_ref_freq / pow(2.0, (scl_deg[scl_length - 1]*q + scl_deg[r - 1])/1200.0);
         }
-    }
-    for (i = 0; i < kbm_middle_note; ++i) {
-        if (i < kbm_first_note) {
-            m[i] = -1;
-            continue;
-        }
-        int n_maps = (i - kbm_middle_note) / kbm_size - 1;
-        m[i] = kbm_middle_note + n_maps*kbm_form_oct;
-        int n_key = (i + 128*kbm_size - kbm_middle_note) % kbm_size;
-        if (kbm_deg[n_key] == -1) {
-            m[i] = -1;
+        /* printf("Ref.key %3d  %3d  %15f\n", q, r, ref_freq); */
+    } while (0);
+    for(i = 0; i != 128; ++i) {
+        int q = (i - kbm_middle_note) / kbm_size;
+        int r = (128*kbm_size + i - kbm_middle_note) % kbm_size;
+        if (i < kbm_middle_note && r != 0) // strange rounding behaviour
+            q -= 1;
+        int mk; // mapped key
+        if (kbm_deg[r] == -1) { // not mapped
+            mk = -1;
         } else {
-            if (n_key == 0)
-                m[i] += kbm_form_oct;
-            m[i] += kbm_deg[n_key];
+            mk = kbm_middle_note + q * kbm_form_oct + kbm_deg[r];
+        }
+        if (mk < 0 || mk > 127) { // out of range (or not mapped)
+            target_freq[i] = -1.0;
+            /* printf("%3d  %3d  %3d  %3d  ---  ---      ---\n", i, q, r, mk); */
+        } else {
+            int qq = (mk - kbm_middle_note) / scl_length;
+            int rr = (128*kbm_size + mk - kbm_middle_note) % scl_length;
+            if (mk < kbm_middle_note && rr != 0) // strange rounding behaviour
+                qq -= 1;
+            if (rr == 0) {
+                target_freq[i] = ref_freq * pow(2.0, scl_deg[scl_length - 1]*qq/1200.0);
+            } else {
+                target_freq[i] = ref_freq * pow(2.0, (scl_deg[scl_length - 1]*qq + scl_deg[rr - 1])/1200.0);
+            }
+            /* printf("%3d  %3d  %3d  %3d  %3d  %3d  %14f\n", i, q, r, mk, qq, rr, target_freq[i]); */
         }
     }
 
-    // fill whole keyrange with freq values
-    double freq[128];
-    freq[kbm_ref_note] = kbm_ref_freq;
-    for (i=kbm_ref_note + 1; i < 128; ++i) {
-        // first move to right proto-octave
-        int n_octave = (i - kbm_ref_note) / scl_length;
-        freq[i] = kbm_ref_freq * pow(2.0, scl_deg[scl_length - 1]*n_octave/1200.0);
-        // next ajust key within proto-octave
-        int n_key = (i - kbm_ref_note) % scl_length;
-        if (n_key > 0)
-            freq[i] *= pow(2.0, scl_deg[n_key - 1]/1200.0);
+    // compute standard 12tet frequency values
+    double source_freq[128];
+    for (i = 0; i != 128; ++i) {
+        source_freq[i] = 440.0 * pow(2.0, -5 - 900./1200. + i*100.0/1200.);
     }
-    for (i=0; i < kbm_ref_note; ++i) {
-        // first move to right proto-octave
-        int n_octave = (i - kbm_ref_note) / scl_length - 1;
-        freq[i] = kbm_ref_freq * pow(2.0, scl_deg[scl_length - 1]*n_octave/1200.0);
-        // next ajust key within proto-octave
-        int n_key = (i + 128*scl_length - kbm_ref_note) % scl_length;
-        if (n_key == 0) {
-            freq[i] *= pow(2.0, scl_deg[scl_length - 1]/1200.0);
-        } else if (n_key > 0) {
-            freq[i] *= pow(2.0, scl_deg[n_key - 1]/1200.0);
-        }
-    }
-
-    // fill up standard 12tet freq
-    double old_freq[128];
-    for (i=0; i < 128; ++i) {
-        old_freq[i] = 440.0 * pow(2.0, -5 - 900./1200. + i*100.0/1200.);
-    }
-
-    // compute translation table
-    for (i=0; i < 128; ++i) {
-        key[i] = find_key(freq[i], old_freq);
-    }
-
-    // compute pitch bend values
-    int pitch[128];
-    int pitch_middle = 8192;
-    int pitch_high = 16384;
-    for (i=0; i < 128; ++i) {
-        if (key[i] == -1) {
-            pitch[i] = -1;
-            continue;
-        }
-        pitch[i] = pitch_middle;
-        double p_ratio = freq[i]/old_freq[key[i]];
-        if (p_ratio > 1.00001) {
-            double p_cents = log(p_ratio) * 1200.0 / log(2.0);
-            pitch[i] += (pitch_high - pitch_middle)*p_cents/200;
-        }
-    }
-
-    // actually writing midi compatible table
-    for (i=0; i < 128; ++i) {
-        if (m[i] == -1 || key[m[i]] == -1) {
+    
+    // write translation table for midi data
+    for (i = 0; i != 128; ++i) {
+        int new_key = find_key(target_freq[i], source_freq);
+        if (new_key == -1) { // key is not mappable
             g_tab[i][0] = 0xff;
-            g_tab[i][1] = 0xff;            
-            g_tab[i][2] = 0xff;
+            g_tab[i][1] = 0xff;
+            g_tab[i][2] = 0xff;            
             continue;
-        } else {
-            g_tab[i][0] = key[m[i]];
-            int p = pitch[m[i]];
-            // convert int to two 7bit bytes (< 16384)
-            // LSB first?
-            g_tab[i][2] = (p & 0x3f80) >> 7;
-            g_tab[i][1] = (p & 0x007f);            
         }
-    }
 
-    printf("Resulting translation table:\n");
-    printf("key map   12tet freq   target freq  key +  +   pitch\n");
-    for (i=0; i < 128; ++i) {
-        if (m[i] == -1) {
-            printf("%3x --- %12f    ---         ---   ---\n", i, old_freq[i]);
-        } else if (key[i] != -1) {
-            printf("%3x %3x %12f  %12f  %2x %2x %2x %6d\n",
-                   i, m[i], old_freq[i], freq[i], g_tab[i][0], g_tab[i][1], g_tab[i][2], pitch[i]);
-        } else {
-            printf("%3x %3x %12f  %12f  ---   ---\n", i, m[i], old_freq[i], freq[i]);
-        }
+        g_tab[i][0] = new_key;
+        double ratio = target_freq[i] / source_freq[new_key];
+        double cents = log(ratio) * 1200.0 / log(2.0);
+        int    pitch = pitch_middle + (pitch_high - pitch_middle) * cents / pitch_range;
+        // convert int to two 7bit bytes (<= 16384), LSB first?
+        g_tab[i][2] = (pitch & 0x3f80) >> 7;
+        g_tab[i][1] = (pitch & 0x007f);
     }
 
     // clear midi channels
