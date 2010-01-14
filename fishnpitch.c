@@ -52,7 +52,7 @@ int usage() {
     printf("     and tunes key 69 to 440.0 Hz\n");
     printf("  -p PITCH_RANGE     \tin cents\n"); 
     printf("     default pitch bend range is +/- 200.0 cents (2 semitones)\n");
-    printf("  -c CHANNELS        \te.g. 01234567890abcdef\n");
+    printf("  -c CHANNELS        \te.g. 0123456789abcdef\n");
     printf("     by default use all 16 channels, write 0 to use just the first\n");
     printf("     number of channels bounds polyphony\n");
     return 1;
@@ -229,7 +229,7 @@ int main(int argc, char *argv[]) {
             break;
         case 'c':
             for (i = 0; i != 16; ++i) {
-                char hex[] = "01234567890abcdef";
+                char hex[] = "0123456789abcdef";
                 if (strchr(optarg, hex[i]) == NULL)
                     g_ch[i] = 0; // deactivate channel
             }
