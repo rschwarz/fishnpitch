@@ -324,6 +324,7 @@ int main(int argc, char *argv[]) {
     }
 
     // compute target frequency values
+    /* printf("  i    q    r   mk   qq   rr  frequency\n"); */
     double * target_freq = malloc(128 * sizeof(double));
     double ref_freq; // first compute the frequency for kbm_middle_note
     do {
@@ -355,7 +356,7 @@ int main(int argc, char *argv[]) {
             /* printf("%3d  %3d  %3d  %3d  ---  ---      ---\n", i, q, r, mk); */
         } else {
             int qq = (mk - kbm_middle_note) / scl_length;
-            int rr = (128*kbm_size + mk - kbm_middle_note) % scl_length;
+            int rr = (128*scl_length + mk - kbm_middle_note) % scl_length;
             if (mk < kbm_middle_note && rr != 0) // strange rounding behaviour
                 qq -= 1;
             if (rr == 0) {
