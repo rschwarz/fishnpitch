@@ -6,7 +6,7 @@ This program's function is to translate incoming MIDI data to some
 (micro-tonal) scale, using pitch bend messages to approximate the
 frequencies.
 
-Several synthesizer (e.g. Alsa Modular Synth or ZynAddSubFX) already
+Several synthesizers (e.g. Alsa Modular Synth or ZynAddSubFX) already
 include this function, via .scl and .kbm files produced by the Scala
 program. See http://www.huygens-fokker.org/scala/ for a description of
 the file formats and a package of 3800 prewritten scales.
