@@ -2,14 +2,13 @@
 fishnpitch - a JACK MIDI realtime tuner
 =======================================
 
-This program's function is to translate incoming MIDI data to some
-(micro-tonal) scale, using pitch bend messages to approximate the
-frequencies.
+fishnpitch can translate incoming MIDI data to some (micro-tonal)
+scale, using pitch bend messages to approximate the frequencies.
 
 Several synthesizers (e.g. Alsa Modular Synth or ZynAddSubFX) already
-include this function, via .scl and .kbm files produced by the Scala
-program. See http://www.huygens-fokker.org/scala/ for a description of
-the file formats and a package of 3800 prewritten scales.
+support this functionality, via .scl and .kbm files produced by the
+Scala program. See http://www.huygens-fokker.org/scala/ for a
+description of the file formats and a collection of common scales.
 
 The .scl file determines the relative frequencies of notes in a scale
 via cent values or ratios. It has to be given as an argument.
@@ -20,7 +19,7 @@ with frequency 440.0 Hz).
 
 Usually, the pitch bend modulation has a range of 200 cents or 2
 semitones in both directions. But since some synthesizers
-(e.h. amSynth) interprete these values differently, you can specify
+(e.g. amSynth) interprete these values differently, you can specify
 the pitch range as an argument, too.
 
 Note that the pitch bend messages are valid for the whole MIDI
@@ -36,6 +35,6 @@ To install, type
 and run the application
 > ./fishnpitch SCALE.scl
 
-You should now be able to connect the MIDI ports, e.g. using Qjackctl.
+You should now be able to connect the MIDI ports, e.g., using Qjackctl.
 
 Please report bugs to Robert Schwarz <mail@rschwarz.net>
